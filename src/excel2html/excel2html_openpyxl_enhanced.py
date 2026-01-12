@@ -265,7 +265,9 @@ def convert_excel_to_html(
     if output_path:
         out_path = Path(output_path)
     else:
-        out_path = source_path.with_suffix(".html")
+        out_path = source_path.with_suffix("").with_name(
+            source_path.stem + "_converted.html"
+        )
 
     filename = source_path.name
     print(f"📄 正在处理: {filename}")

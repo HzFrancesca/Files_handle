@@ -2,7 +2,8 @@
 Excel 转 HTML 完整流水线
 输入 Excel 文件 -> 生成增强 HTML -> 切分为 Chunks
 
-中间结果和最终结果都保存到原文件同目录下
+中间结果命名: 原文件名_converted.html
+最终结果命名: 原文件名.html（与原文件同名，方便直接使用）
 """
 
 from pathlib import Path
@@ -143,10 +144,8 @@ def run_pipeline(
         )
     print(f"🔪 切分完成：共生成 {len(chunks)} 个片段")
 
-    # 保存 chunk 结果
-    chunk_path = source_path.with_suffix("").with_name(
-        source_path.stem + "_chunk_merged.html"
-    )
+    # 保存 chunk 结果（最终结果与原文件同名，方便直接使用）
+    chunk_path = source_path.with_suffix(".html")
 
     formatted_separator = f"\n\n{separator}\n\n"
     merged_content = formatted_separator.join(chunks)
@@ -165,6 +164,7 @@ def run_pipeline(
     print(f"   📄 最终结果 (Chunks): {chunk_path}")
     print(f"   🔢 Chunk 数量: {len(chunks)}")
     print(f"   🔑 分隔符: {separator}")
+    print(f"   💡 提示: 最终结果与原文件同名，可直接使用")
     print("=" * 50)
 
     return {
