@@ -13,13 +13,13 @@ from excel2html_openpyxl_enhanced import convert_excel_to_html
 from html2chunk import distribute_assets_and_chunk, estimate_tokens
 
 
-def estimate_rows_for_token_limit(html_content: str, target_tokens: int = 512) -> int:
+def estimate_rows_for_token_limit(html_content: str, target_tokens: int = 1024) -> int:
     """
     根据目标 token 数估算每个 chunk 应该包含多少行
 
     参数:
         html_content: 完整的 HTML 内容
-        target_tokens: 目标 token 数（默认 512）
+        target_tokens: 目标 token 数（默认 1024）
 
     返回:
         建议的 max_rows_per_chunk
@@ -79,7 +79,7 @@ def run_pipeline(
     excel_path: str,
     keywords: list = None,
     max_rows_per_chunk: int = None,
-    target_tokens: int = 512,
+    target_tokens: int = 1024,
     separator: str = "!!!_CHUNK_BREAK_!!!",
 ):
     """
@@ -164,7 +164,6 @@ def run_pipeline(
     print(f"   📄 最终结果 (Chunks): {chunk_path}")
     print(f"   🔢 Chunk 数量: {len(chunks)}")
     print(f"   🔑 分隔符: {separator}")
-    print(f"   💡 提示: 最终结果与原文件同名，可直接使用")
     print("=" * 50)
 
     return {
@@ -183,9 +182,9 @@ def main():
 示例:
   python pipeline.py input.xlsx
   python pipeline.py input.xlsx -k "财务报表" "年度收入"
-  python pipeline.py input.xlsx -t 512          # 基于 512 tokens 自动计算行数
+  python pipeline.py input.xlsx -t 1024         # 基于 1024 tokens 自动计算行数
   python pipeline.py input.xlsx -r 5            # 固定每 chunk 5 行
-  python pipeline.py input.xlsx -t 1024 -s "---SPLIT---"
+  python pipeline.py input.xlsx -t 2048 -s "---SPLIT---"
         """,
     )
     parser.add_argument("excel_file", help="要转换的 Excel 文件路径")
@@ -203,8 +202,8 @@ def main():
         "-t",
         "--target-tokens",
         type=int,
-        default=512,
-        help="目标 token 数，自动计算行数（默认: 512）",
+        default=1024,
+        help="目标 token 数，自动计算行数（默认: 1024）",
     )
     parser.add_argument(
         "-s",

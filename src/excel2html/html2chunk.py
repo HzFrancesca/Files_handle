@@ -1,11 +1,41 @@
 from pathlib import Path
 from bs4 import BeautifulSoup
 import copy
+import json
+import re
 
 
 def estimate_tokens(text: str) -> int:
     """估算文本的 token 数量（中文约2.5字符=1token）"""
     return int(len(text) / 2.5)
+
+
+def extract_note_references(text):
+    """
+    从文本中提取注释引用
+    
+    例如：
+    - "EX[注1]" -> {"注1"}
+    - "税则号列对应关系[注]" -> {"注"}
+    - "数据*" -> {"*"}
+    """
+    refs = set()
+    
+    # 匹配 [注1]、[注]、[备注1] 等
+    bracket_refs = re.findall(r'\[(注\d*|备注\d*|说明\d*|注意\d*)\]', text)
+    refs.update(bracket_refs)
+    
+    # 匹配上标形式或直接跟随的注释标记
+    superscript_refs = re.findall(r'[^\[](注\d+)(?:[：:）\)]|$|\s)', text)
+    refs.update(superscript_refs)
+    
+    # 匹配 * 等符号
+    if '*' in text:
+        refs.add('*')
+    if '※' in text:
+        refs.add('※')
+    
+    return refs
 
 
 def distribute_assets_and_chunk(
@@ -34,6 +64,18 @@ def distribute_assets_and_chunk(
         if table_node and table_node.find_previous_sibling("div"):
             context_div = table_node.find_previous_sibling("div")
 
+    # 1.1 提取注释元数据
+    notes_meta_script = soup.find("script", class_="table-notes-meta")
+    header_notes = {}
+    conditional_notes = {}
+    if notes_meta_script:
+        try:
+            notes_meta = json.loads(notes_meta_script.string)
+            header_notes = notes_meta.get("header_notes", {})
+            conditional_notes = notes_meta.get("conditional_notes", {})
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
     # 2. 提取表格核心组件
     original_table = soup.find("table")
     if not original_table:
@@ -48,10 +90,12 @@ def distribute_assets_and_chunk(
     else:
         header_rows = original_table.find_all("tr")[:1]
 
-    # 3. 准备数据行
+    # 3. 准备数据行（排除注释行）
     tbody = original_table.find("tbody")
     if tbody:
-        data_rows = tbody.find_all("tr")
+        all_body_rows = tbody.find_all("tr")
+        # 过滤掉注释行（带 class="table-note-row" 的行）
+        data_rows = [row for row in all_body_rows if "table-note-row" not in row.get("class", [])]
     else:
         all_rows = original_table.find_all("tr")
         data_rows = [row for row in all_rows if row not in header_rows]
@@ -82,12 +126,30 @@ def distribute_assets_and_chunk(
             return row_count >= max_rows_per_chunk
 
     def build_chunk(data_rows_for_chunk):
-        """组装一个 chunk"""
+        """组装一个 chunk，智能添加匹配的注释"""
         new_soup = BeautifulSoup("<div></div>", "html.parser")
         wrapper_div = new_soup.div
 
+        # 收集这个 chunk 数据行中的注释引用
+        chunk_text = " ".join(str(row) for row in data_rows_for_chunk)
+        chunk_refs = extract_note_references(chunk_text)
+        
+        # 匹配需要添加的注释：表头注释 + 数据行匹配的注释
+        matched_notes = []
+        for key, note in header_notes.items():
+            matched_notes.append(note)
+        for key, note in conditional_notes.items():
+            if key in chunk_refs:
+                matched_notes.append(note)
+        
+        # 构建带注释的 context
         if context_div:
-            wrapper_div.append(copy.copy(context_div))
+            new_context = copy.copy(context_div)
+            if matched_notes:
+                # 在 context 末尾添加注释
+                notes_text = " | ".join(matched_notes)
+                new_context.string = (new_context.get_text() or "") + f" 【表格注释】{notes_text}"
+            wrapper_div.append(new_context)
 
         new_table = new_soup.new_tag("table")
         new_table.attrs = original_table.attrs
