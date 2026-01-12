@@ -21,11 +21,7 @@ def get_merged_cell_value(sheet, row, col):
 
 
 def get_cell_value(sheet, row, col, fill_merged=True):
-    """
-    获取单元格值
-    fill_merged=True: 合并单元格填充相同内容
-    fill_merged=False: 只有左上角有值，其他位置为空
-    """
+    """获取单元格值"""
     if fill_merged:
         return get_merged_cell_value(sheet, row, col)
     else:
@@ -122,7 +118,4 @@ if __name__ == "__main__":
     target_folder = (
         r"C:\Users\Administrator\Desktop\玄通\通用知识库_handled\2026年税则调整"
     )
-
-    # fill_merged=True  填充合并单元格（推荐用于 LLM）
-    # fill_merged=False 不填充，合并区域只有左上角有值
     convert_folder(target_folder, fill_merged=True)

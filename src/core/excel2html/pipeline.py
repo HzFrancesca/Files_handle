@@ -1,34 +1,21 @@
 """
 Excel 转 HTML 完整流水线
 输入 Excel 文件 -> 生成增强 HTML -> 切分为 Chunks
-
-中间结果命名: 原文件名_converted.html
-最终结果命名: 原文件名.html（与原文件同名，方便直接使用）
 """
 
 from pathlib import Path
 import argparse
 
-from excel2html_openpyxl_enhanced import convert_excel_to_html
-from html2chunk import distribute_assets_and_chunk, estimate_tokens
+from .excel2html_openpyxl_enhanced import convert_excel_to_html
+from .html2chunk import distribute_assets_and_chunk, estimate_tokens
 
 
 def estimate_rows_for_token_limit(html_content: str, target_tokens: int = 1024) -> int:
-    """
-    根据目标 token 数估算每个 chunk 应该包含多少行
-
-    参数:
-        html_content: 完整的 HTML 内容
-        target_tokens: 目标 token 数（默认 1024）
-
-    返回:
-        建议的 max_rows_per_chunk
-    """
+    """根据目标 token 数估算每个 chunk 应该包含多少行"""
     from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(html_content, "html.parser")
 
-    # 计算固定开销（context + caption + thead）
     fixed_parts = []
 
     context_div = soup.find("div", class_="rag-context")
@@ -37,7 +24,7 @@ def estimate_rows_for_token_limit(html_content: str, target_tokens: int = 1024) 
 
     table = soup.find("table")
     if not table:
-        return 8  # 无表格，返回默认值
+        return 8
 
     caption = table.find("caption")
     if caption:
@@ -49,7 +36,6 @@ def estimate_rows_for_token_limit(html_content: str, target_tokens: int = 1024) 
 
     fixed_overhead = estimate_tokens("".join(fixed_parts))
 
-    # 计算每行平均 token
     tbody = table.find("tbody")
     if tbody:
         data_rows = tbody.find_all("tr")
@@ -63,15 +49,13 @@ def estimate_rows_for_token_limit(html_content: str, target_tokens: int = 1024) 
     total_row_tokens = sum(estimate_tokens(str(row)) for row in data_rows)
     avg_tokens_per_row = total_row_tokens / len(data_rows)
 
-    # 计算可用于数据行的 token 数
     available_tokens = target_tokens - fixed_overhead
 
     if available_tokens <= 0 or avg_tokens_per_row <= 0:
-        return 1  # 极端情况，每个 chunk 只放 1 行
+        return 1
 
     suggested_rows = int(available_tokens / avg_tokens_per_row)
 
-    # 限制在合理范围 [1, 20]
     return max(1, min(suggested_rows, 20))
 
 
@@ -82,23 +66,7 @@ def run_pipeline(
     target_tokens: int = 1024,
     separator: str = "!!!_CHUNK_BREAK_!!!",
 ):
-    """
-    执行完整的 Excel -> HTML -> Chunks 流水线
-
-    参数:
-        excel_path: Excel 文件路径
-        keywords: 关键检索词列表（用于幽灵标题）
-        max_rows_per_chunk: 每个 chunk 的最大行数（如果指定，优先使用）
-        target_tokens: 目标 token 数（当 max_rows 未指定时，自动计算行数）
-        separator: chunk 之间的分隔符
-
-    返回:
-        dict: {
-            'html_path': 中间 HTML 文件路径,
-            'chunk_path': 最终 chunk 文件路径,
-            'chunk_count': chunk 数量
-        }
-    """
+    """执行完整的 Excel -> HTML -> Chunks 流水线"""
     source_path = Path(excel_path)
 
     if not source_path.exists():
@@ -114,7 +82,7 @@ def run_pipeline(
     html_path = convert_excel_to_html(
         excel_path=str(source_path),
         keywords=keywords,
-        output_path=None,  # 默认保存到同目录
+        output_path=None,
     )
 
     if not html_path:
@@ -125,9 +93,7 @@ def run_pipeline(
     print("\n📌 第二步：HTML 切分为 Chunks")
     html_content = Path(html_path).read_text(encoding="utf-8")
 
-    # 自动计算或使用指定的行数
     if max_rows_per_chunk is None:
-        # 使用 token 模式：逐行累加，精确控制每个 chunk 的 token 数
         print(f"📊 使用 token 模式，目标每 chunk ≤ {target_tokens} tokens")
         chunks = distribute_assets_and_chunk(
             html_content,
@@ -135,7 +101,6 @@ def run_pipeline(
             max_tokens_per_chunk=target_tokens
         )
     else:
-        # 使用行数模式
         print(f"📊 使用行数模式，每 chunk {max_rows_per_chunk} 行")
         chunks = distribute_assets_and_chunk(
             html_content,
@@ -144,7 +109,6 @@ def run_pipeline(
         )
     print(f"🔪 切分完成：共生成 {len(chunks)} 个片段")
 
-    # 保存 chunk 结果（最终结果与原文件同名，方便直接使用）
     chunk_path = source_path.with_suffix(".html")
 
     formatted_separator = f"\n\n{separator}\n\n"
@@ -157,7 +121,6 @@ def run_pipeline(
         print(f"❌ 写入 Chunk 文件失败: {e}")
         return None
 
-    # === 完成 ===
     print("\n" + "=" * 50)
     print("🎉 流水线执行完成！")
     print(f"   📄 中间结果 (HTML): {html_path}")
@@ -182,8 +145,8 @@ def main():
 示例:
   python pipeline.py input.xlsx
   python pipeline.py input.xlsx -k "财务报表" "年度收入"
-  python pipeline.py input.xlsx -t 1024         # 基于 1024 tokens 自动计算行数
-  python pipeline.py input.xlsx -r 5            # 固定每 chunk 5 行
+  python pipeline.py input.xlsx -t 1024
+  python pipeline.py input.xlsx -r 5
   python pipeline.py input.xlsx -t 2048 -s "---SPLIT---"
         """,
     )
@@ -196,20 +159,20 @@ def main():
         "--max-rows",
         type=int,
         default=None,
-        help="每个 chunk 的最大数据行数（指定后忽略 -t 参数）",
+        help="每个 chunk 的最大数据行数",
     )
     parser.add_argument(
         "-t",
         "--target-tokens",
         type=int,
         default=1024,
-        help="目标 token 数，自动计算行数（默认: 1024）",
+        help="目标 token 数（默认: 1024）",
     )
     parser.add_argument(
         "-s",
         "--separator",
         default="!!!_CHUNK_BREAK_!!!",
-        help="chunk 之间的分隔符（默认: !!!_CHUNK_BREAK_!!!）",
+        help="chunk 之间的分隔符",
     )
 
     args = parser.parse_args()

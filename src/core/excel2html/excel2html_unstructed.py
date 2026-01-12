@@ -4,26 +4,19 @@ from unstructured.documents.elements import Table, Title
 
 
 def convert_excel_to_html_file(excel_path):
-    """
-    读取 Excel，提取表格的 HTML 结构，并保存为同名 HTML 文件。
-    """
-    # 1. 路径处理 (全部使用 pathlib)
+    """读取 Excel，提取表格的 HTML 结构，并保存为同名 HTML 文件。"""
     source_path = excel_path if isinstance(excel_path, Path) else Path(excel_path)
 
-    # 检查文件是否存在 (替代 os.path.exists)
     if not source_path.exists():
         print(f"❌ 错误：找不到文件 '{source_path}'")
         return
 
-    # 准备输出路径：替换后缀名为 .html
     output_path = source_path.with_suffix(".html")
-
     print(f"正在处理: {source_path.name}")
 
-    # 2. 使用 Unstructured 解析 Excel
     try:
         elements = partition_xlsx(
-            filename=str(source_path),  # partition_xlsx 需要字符串路径
+            filename=str(source_path),
             mode="elements",
             include_metadata=True,
             infer_table_structure=True,
@@ -32,7 +25,6 @@ def convert_excel_to_html_file(excel_path):
         print(f"❌ 解析失败: {e}")
         return
 
-    # 3. 构建 HTML 内容 (含 CSS 样式)
     html_content = []
 
     html_header = """<!DOCTYPE html>
@@ -45,7 +37,6 @@ def convert_excel_to_html_file(excel_path):
     html_content.append(html_header)
 
     for element in elements:
-        # 处理表格
         if isinstance(element, Table):
             if (
                 hasattr(element.metadata, "text_as_html")
@@ -54,20 +45,14 @@ def convert_excel_to_html_file(excel_path):
                 html_content.append(element.metadata.text_as_html)
             else:
                 html_content.append(f"<pre>{element.text}</pre>")
-
-        # 处理标题
         elif isinstance(element, Title):
             html_content.append(f"<h2>{element.text}</h2>")
-
-        # 处理其他文本
         else:
             html_content.append(f"<p>{element.text}</p>")
 
     html_content.append("</body></html>")
 
-    # 4. 写入文件 (使用 pathlib 的 write_text 方法，更加简洁)
     try:
-        # write_text 自动处理了 open() 和 close()
         output_path.write_text("\n".join(html_content), encoding="utf-8")
         print(f"✅ 转换成功！文件已保存至: {output_path.absolute()}")
     except IOError as e:
@@ -104,11 +89,8 @@ def convert_folder(folder_path_str: str):
     print("\n🎉 处理完成！")
 
 
-# --- 主程序入口 ---
 if __name__ == "__main__":
-    # 在这里修改你的文件夹路径
     target_folder = (
         r"C:\Users\Administrator\Desktop\玄通\通用知识库_handled\2026年税则调整"
     )
-
     convert_folder(target_folder)

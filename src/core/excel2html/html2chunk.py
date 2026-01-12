@@ -11,25 +11,17 @@ def estimate_tokens(text: str) -> int:
 
 
 def extract_note_references(text):
-    """
-    从文本中提取注释引用
-    
-    例如：
-    - "EX[注1]" -> {"注1"}
-    - "税则号列对应关系[注]" -> {"注"}
-    - "数据*" -> {"*"}
-    """
+    """从文本中提取注释引用"""
     refs = set()
     
-    # 匹配 [注1]、[注]、[备注1] 等
-    bracket_refs = re.findall(r'\[(注\d*|备注\d*|说明\d*|注意\d*)\]', text)
-    refs.update(bracket_refs)
+    # 匹配方括号内的注释引用，允许空格: [注1], [注1 ], [注 1] 等
+    bracket_refs = re.findall(r'\[(注\s*\d*|备注\s*\d*|说明\s*\d*|注意\s*\d*)\s*\]', text)
+    # 标准化：去除空格
+    refs.update(ref.replace(' ', '') for ref in bracket_refs)
     
-    # 匹配上标形式或直接跟随的注释标记
     superscript_refs = re.findall(r'[^\[](注\d+)(?:[：:）\)]|$|\s)', text)
     refs.update(superscript_refs)
     
-    # 匹配 * 等符号
     if '*' in text:
         refs.add('*')
     if '※' in text:
@@ -51,7 +43,6 @@ def distribute_assets_and_chunk(
 
     如果两个参数都未指定，默认 max_rows_per_chunk=8
     """
-    # 默认值
     if max_rows_per_chunk is None and max_tokens_per_chunk is None:
         max_rows_per_chunk = 8
 
@@ -94,7 +85,6 @@ def distribute_assets_and_chunk(
     tbody = original_table.find("tbody")
     if tbody:
         all_body_rows = tbody.find_all("tr")
-        # 过滤掉注释行（带 class="table-note-row" 的行）
         data_rows = [row for row in all_body_rows if "table-note-row" not in row.get("class", [])]
     else:
         all_rows = original_table.find_all("tr")
@@ -117,12 +107,10 @@ def distribute_assets_and_chunk(
     def should_split(row_count, row_tokens):
         """判断是否应该切分"""
         if max_tokens_per_chunk is not None:
-            # Token 模式：检查累计 token 是否超限
             return (
                 current_chunk_tokens + row_tokens + fixed_overhead
             ) > max_tokens_per_chunk
         else:
-            # 行数模式
             return row_count >= max_rows_per_chunk
 
     def build_chunk(data_rows_for_chunk):
@@ -130,11 +118,12 @@ def distribute_assets_and_chunk(
         new_soup = BeautifulSoup("<div></div>", "html.parser")
         wrapper_div = new_soup.div
 
-        # 收集这个 chunk 数据行中的注释引用
+        # 从数据行和表头中提取注释引用
         chunk_text = " ".join(str(row) for row in data_rows_for_chunk)
-        chunk_refs = extract_note_references(chunk_text)
+        header_text = " ".join(str(row) for row in header_rows)
+        all_text = chunk_text + " " + header_text
+        chunk_refs = extract_note_references(all_text)
         
-        # 匹配需要添加的注释：表头注释 + 数据行匹配的注释
         matched_notes = []
         for key, note in header_notes.items():
             matched_notes.append(note)
@@ -142,11 +131,9 @@ def distribute_assets_and_chunk(
             if key in chunk_refs:
                 matched_notes.append(note)
         
-        # 构建带注释的 context
         if context_div:
             new_context = copy.copy(context_div)
             if matched_notes:
-                # 在 context 末尾添加注释
                 notes_text = " | ".join(matched_notes)
                 new_context.string = (new_context.get_text() or "") + f" 【表格注释】{notes_text}"
             wrapper_div.append(new_context)
@@ -176,7 +163,6 @@ def distribute_assets_and_chunk(
     for i, row in enumerate(data_rows):
         row_tokens = estimate_tokens(str(row))
 
-        # 检查是否需要先切分（当前 chunk 非空且加入新行会超限）
         if current_chunk_data and should_split(len(current_chunk_data), row_tokens):
             chunks.append(build_chunk(current_chunk_data))
             current_chunk_data = []
@@ -185,7 +171,6 @@ def distribute_assets_and_chunk(
         current_chunk_data.append(row)
         current_chunk_tokens += row_tokens
 
-        # 最后一行，收尾
         if i == len(data_rows) - 1 and current_chunk_data:
             chunks.append(build_chunk(current_chunk_data))
 
@@ -193,9 +178,7 @@ def distribute_assets_and_chunk(
 
 
 def process_and_merge_html(file_path_str, separator="!!!_CHUNK_BREAK_!!!"):
-    """
-    读取文件 -> 切分 -> 合并 -> 保存
-    """
+    """读取文件 -> 切分 -> 合并 -> 保存"""
     source_path = Path(file_path_str)
 
     if not source_path.exists():
@@ -205,23 +188,16 @@ def process_and_merge_html(file_path_str, separator="!!!_CHUNK_BREAK_!!!"):
     print(f"📂 正在读取: {source_path.name}")
     content = source_path.read_text(encoding="utf-8")
 
-    # 1. 执行切分逻辑
-    # 建议 max_rows_per_chunk 设置为 5-10，保证每个 chunk 不会因为加上表头和context后超过 Token 限制
     chunks = distribute_assets_and_chunk(content, max_rows_per_chunk=2)
 
     print(f"🔪 切分完成：共生成 {len(chunks)} 个片段")
 
-    # 2. 执行合并逻辑
-    # 我们在分隔符前后加换行符，确保结构清晰，不会粘连 HTML 标签
     formatted_separator = f"\n\n{separator}\n\n"
     merged_content = formatted_separator.join(chunks)
 
-    # 3. 构建输出路径
-    # 例子: input.html -> input_chunk_merged.html
     new_filename = source_path.stem + "_chunk_merged" + source_path.suffix
     output_path = source_path.with_name(new_filename)
 
-    # 4. 写入文件
     try:
         output_path.write_text(merged_content, encoding="utf-8")
         print(f"✅ 合并成功！文件已保存至: {output_path.absolute()}")
@@ -230,10 +206,6 @@ def process_and_merge_html(file_path_str, separator="!!!_CHUNK_BREAK_!!!"):
         print(f"❌ 写入失败: {e}")
 
 
-# --- 主程序入口 ---
 if __name__ == "__main__":
-    # 请将此处修改为你那个“已经处理过Context的长HTML”文件路径
-    my_input_file = "Files\Excel\本国子目注释调整表.html"
-
-    # 运行
+    my_input_file = "Files\\Excel\\本国子目注释调整表.html"
     process_and_merge_html(my_input_file)
