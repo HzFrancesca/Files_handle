@@ -195,7 +195,7 @@ def sheet_to_enhanced_html(sheet, filename, keywords=None):
     # === 增强2: 幽灵标题 (Ghost Caption) ===
     if keywords:
         keyword_str = "，".join(keywords)
-        caption_html = f"    <caption>关键检索词：{keyword_str}。此表可能包含相关问题的答案。</caption>"
+        caption_html = f"    <caption>关键检索词：{keyword_str}</caption>"
         html_parts.append(caption_html)
 
     # === 增强3: 表头降维 - 只保留扁平化的表头 ===
