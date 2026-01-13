@@ -21,6 +21,9 @@ def process_excel(
     split_mode: str,
     max_rows: int,
     target_tokens: int,
+    enable_min_tokens: bool,
+    min_tokens: int,
+    token_strategy: str,
     separator: str,
 ):
     """处理 Excel 文件的主函数"""
@@ -58,10 +61,22 @@ def process_excel(
 
         # 第二步：HTML -> Chunks
         if split_mode == "按 Token 数":
+            # 处理最小 token 限制
+            min_tokens_value = min_tokens if enable_min_tokens else None
+            
+            # 验证最小值不能大于等于最大值
+            if min_tokens_value is not None and min_tokens_value >= target_tokens:
+                return None, None, f"❌ 最小 Token 数 ({min_tokens_value}) 必须小于最大 Token 数 ({target_tokens})"
+            
+            # 转换策略参数
+            strategy = "prefer_max" if token_strategy == "接近最大值" else "prefer_min"
+            
             result = distribute_assets_and_chunk(
                 html_content,
                 max_rows_per_chunk=None,
                 max_tokens_per_chunk=target_tokens,
+                min_tokens_per_chunk=min_tokens_value,
+                token_strategy=strategy,
             )
         else:
             result = distribute_assets_and_chunk(
@@ -110,6 +125,7 @@ def process_excel(
 源文件：{source_path.name}
 关键词：{', '.join(keywords) if keywords else '无'}
 切分模式：{split_mode}
+{f'最小 Token：{min_tokens}，策略：{token_strategy}' if split_mode == "按 Token 数" and enable_min_tokens else ''}
 生成 Chunks：{len(chunks)} 个
 Token 统计：最小={stats['min_token_count']}, 最大={stats['max_token_count']}, 平均={stats['avg_token_count']:.1f}
 分隔符：{separator}{warning_text}"""

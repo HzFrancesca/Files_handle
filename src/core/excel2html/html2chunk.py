@@ -59,7 +59,8 @@ def extract_note_references(text):
 
 
 def distribute_assets_and_chunk(
-    long_html_content, max_rows_per_chunk: int = None, max_tokens_per_chunk: int = None
+    long_html_content, max_rows_per_chunk: int = None, max_tokens_per_chunk: int = None,
+    min_tokens_per_chunk: int = None, token_strategy: str = "prefer_max"
 ):
     """
     核心逻辑：将长 HTML 切分，并把全局资产（Context/Caption/Header）分发给每个片段
@@ -67,7 +68,11 @@ def distribute_assets_and_chunk(
     参数:
         long_html_content: 完整 HTML 内容
         max_rows_per_chunk: 按行数切分（优先）
-        max_tokens_per_chunk: 按 token 数切分（更精确）
+        max_tokens_per_chunk: 按 token 数切分（更精确）- 最大 token 限制
+        min_tokens_per_chunk: 最小 token 数（可选）- chunk 至少要达到此值才切分
+        token_strategy: 切分策略（仅在启用 min_tokens_per_chunk 时生效）
+            - "prefer_max": 接近最大值 - 累加到接近 max_tokens 才切分（默认）
+            - "prefer_min": 接近最小值 - 超过 min_tokens 就立即切分
 
     如果两个参数都未指定，默认 max_rows_per_chunk=8
     
@@ -80,6 +85,13 @@ def distribute_assets_and_chunk(
     """
     if max_rows_per_chunk is None and max_tokens_per_chunk is None:
         max_rows_per_chunk = 8
+    
+    # 验证 min_tokens_per_chunk 参数
+    if min_tokens_per_chunk is not None:
+        if max_tokens_per_chunk is None:
+            raise ValueError("min_tokens_per_chunk 只能在 token 模式下使用，请同时设置 max_tokens_per_chunk")
+        if min_tokens_per_chunk >= max_tokens_per_chunk:
+            raise ValueError(f"min_tokens_per_chunk ({min_tokens_per_chunk}) 必须小于 max_tokens_per_chunk ({max_tokens_per_chunk})")
 
     soup = BeautifulSoup(long_html_content, "html.parser")
 
@@ -181,13 +193,37 @@ def distribute_assets_and_chunk(
         return estimate_tokens(f" 【表格注释】{notes_text}")
 
     def should_split(row_count, row_tokens, pending_rows, new_row):
-        """判断是否应该切分（动态计算注释开销）"""
+        """判断是否应该切分（动态计算注释开销）
+        
+        返回 True 表示：在加入 new_row 之前，先把 pending_rows 输出为一个 chunk
+        
+        策略说明：
+        - prefer_max: 尽量累积到接近 max_tokens，只有加入新行会超过 max 时才切分
+        - prefer_min: 只要当前已达到 min_tokens，就可以切分（但不能超过 max）
+        """
         if max_tokens_per_chunk is not None:
-            # 计算如果加入新行后的注释开销
+            # 计算当前 chunk 的 token 数（不含新行）
+            current_notes_overhead = calculate_notes_overhead(pending_rows)
+            current_total = current_chunk_tokens + base_fixed_overhead + current_notes_overhead
+            
+            # 计算如果加入新行后的总 token 数
             test_rows = pending_rows + [new_row]
             notes_overhead = calculate_notes_overhead(test_rows)
             total_overhead = base_fixed_overhead + notes_overhead
-            return (current_chunk_tokens + row_tokens + total_overhead) > max_tokens_per_chunk
+            potential_total = current_chunk_tokens + row_tokens + total_overhead
+            
+            # 如果加入新行会超过最大限制，必须切分
+            if potential_total > max_tokens_per_chunk:
+                return True
+            
+            # 如果启用了最小 token 限制且使用 prefer_min 策略
+            if min_tokens_per_chunk is not None and token_strategy == "prefer_min":
+                # 当前 chunk 已达到最小值，可以切分
+                if current_total >= min_tokens_per_chunk:
+                    return True
+            
+            # 其他情况（prefer_max 或未达到 min）：继续累积
+            return False
         else:
             return row_count >= max_rows_per_chunk
 
@@ -297,6 +333,9 @@ def distribute_assets_and_chunk(
     
     if max_tokens_per_chunk:
         stats["token_limit"] = max_tokens_per_chunk
+    if min_tokens_per_chunk:
+        stats["min_token_limit"] = min_tokens_per_chunk
+        stats["token_strategy"] = token_strategy
 
     return {
         "chunks": chunks,
