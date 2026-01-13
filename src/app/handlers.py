@@ -58,40 +58,63 @@ def process_excel(
 
         # 第二步：HTML -> Chunks
         if split_mode == "按 Token 数":
-            chunks = distribute_assets_and_chunk(
+            result = distribute_assets_and_chunk(
                 html_content,
                 max_rows_per_chunk=None,
                 max_tokens_per_chunk=target_tokens,
             )
         else:
-            chunks = distribute_assets_and_chunk(
+            result = distribute_assets_and_chunk(
                 html_content,
                 max_rows_per_chunk=max_rows,
                 max_tokens_per_chunk=None,
             )
 
+        chunks = result["chunks"]
+        warnings = result["warnings"]
+        stats = result["stats"]
+
         # 合并 chunks
         formatted_separator = f"\n\n{separator}\n\n"
         merged_content = formatted_separator.join(chunks)
 
-        # 保存最终结果
-        chunk_path = temp_dir / f"{source_path.stem}_chunks.html"
+        # 保存最终结果（使用原始文件名）
+        html_output_name = f"{source_path.stem}_middle.html"
+        chunk_output_name = f"{source_path.stem}.html"
+        
+        chunk_path = temp_dir / chunk_output_name
         chunk_path.write_text(merged_content, encoding="utf-8")
 
+        # 将 HTML 文件复制到带有正确文件名的路径
+        # 因为 convert_excel_to_html 可能生成在不同位置
+        html_final_path = temp_dir / html_output_name
+        if str(html_path) != str(html_final_path):
+            shutil.copy(html_path, html_final_path)
+            html_path = str(html_final_path)
+        else:
+            html_path = str(html_path)
+
         # 更新全局路径
-        current_html_path = str(html_path)
+        current_html_path = html_path
         current_chunk_path = str(chunk_path)
 
         # 生成状态信息
+        warning_text = ""
+        if warnings:
+            warning_text = f"\n⚠️ 警告：{len(warnings)} 个片段超过 token 限制"
+            for w in warnings:
+                warning_text += f"\n   - 片段 #{w['chunk_index']}: {w['actual_tokens']} tokens (超出 {w['overflow']})"
+
         status = f"""✅ 处理完成
 
 源文件：{source_path.name}
 关键词：{', '.join(keywords) if keywords else '无'}
 切分模式：{split_mode}
 生成 Chunks：{len(chunks)} 个
-分隔符：{separator}"""
+Token 统计：最小={stats['min_token_count']}, 最大={stats['max_token_count']}, 平均={stats['avg_token_count']:.1f}
+分隔符：{separator}{warning_text}"""
 
-        return str(html_path), str(chunk_path), status
+        return html_path, str(chunk_path), status
 
     except Exception as e:
         current_html_path = None

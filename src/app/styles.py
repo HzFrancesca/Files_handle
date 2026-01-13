@@ -200,4 +200,19 @@ input[type="range"] {
 .tooltip:hover {
     color: #2563eb;
 }
+
+/* 隐藏 Gradio 的预估时间显示，只保留已用时间 */
+.eta-bar {
+    display: none !important;
+}
+
+.progress-text::after {
+    content: "" !important;
+}
+
+/* 隐藏进度条中的预估时间部分 (格式: 已用时间/预估时间) */
+.meta-text-center::after,
+.progress-bar span[data-testid="eta"] {
+    display: none !important;
+}
 """

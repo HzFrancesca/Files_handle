@@ -95,21 +95,34 @@ def run_pipeline(
 
     if max_rows_per_chunk is None:
         print(f"📊 使用 token 模式，目标每 chunk ≤ {target_tokens} tokens")
-        chunks = distribute_assets_and_chunk(
+        result = distribute_assets_and_chunk(
             html_content,
             max_rows_per_chunk=None,
             max_tokens_per_chunk=target_tokens
         )
     else:
         print(f"📊 使用行数模式，每 chunk {max_rows_per_chunk} 行")
-        chunks = distribute_assets_and_chunk(
+        result = distribute_assets_and_chunk(
             html_content,
             max_rows_per_chunk=max_rows_per_chunk,
             max_tokens_per_chunk=None
         )
-    print(f"🔪 切分完成：共生成 {len(chunks)} 个片段")
+    
+    chunks = result["chunks"]
+    warnings = result["warnings"]
+    stats = result["stats"]
+    
+    print(f"🔪 切分完成：共生成 {stats['total_chunks']} 个片段")
+    print(f"📊 Token 统计: 最小={stats['min_token_count']}, 最大={stats['max_token_count']}, 平均={stats['avg_token_count']:.1f}")
+    
+    # 输出超限警告
+    if warnings:
+        print(f"\n⚠️  警告：有 {len(warnings)} 个片段超过 token 限制：")
+        for w in warnings:
+            print(f"   - 片段 #{w['chunk_index']}: {w['actual_tokens']} tokens (超出 {w['overflow']})")
+            print(f"     原因: {w['reason']}")
 
-    chunk_path = source_path.with_suffix(".html")
+    chunk_path = source_path.parent / f"{source_path.stem}.html"
 
     formatted_separator = f"\n\n{separator}\n\n"
     merged_content = formatted_separator.join(chunks)

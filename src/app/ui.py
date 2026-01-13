@@ -137,7 +137,7 @@ def create_ui():
                 html_preview_content = gr.HTML(visible=False)
                 chunk_preview_content = gr.HTML(visible=False)
 
-        # 绑定处理事件
+        # 绑定处理事件 - 禁用默认的 ETA 预估显示
         process_btn.click(
             fn=process_excel,
             inputs=[
@@ -149,6 +149,7 @@ def create_ui():
                 separator_input,
             ],
             outputs=[html_output, chunk_output, status_output],
+            show_progress="minimal",
         )
         
         # 预览按钮 - 使用 JavaScript 在新标签页打开

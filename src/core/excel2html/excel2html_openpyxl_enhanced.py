@@ -192,7 +192,11 @@ def build_flattened_headers(sheet, merged_info, header_rows):
 
 
 def parse_notes_with_keys(notes_list):
-    """解析注释列表，提取注释编号和内容"""
+    """解析注释列表，提取注释编号和内容
+    
+    支持拆分包含多个注释的文本块，例如：
+    "[注1]内容1\n[注2]内容2" -> {"注1": "[注1]内容1", "注2": "[注2]内容2"}
+    """
     notes_dict = {}
     
     for note in notes_list:
@@ -200,42 +204,112 @@ def parse_notes_with_keys(notes_list):
         if not note:
             continue
         
-        bracket_match = re.match(r'^[\[（\(](注\d*|备注\d*|说明\d*)[\]）\)]', note)
-        if bracket_match:
-            key = bracket_match.group(1)
-            notes_dict[key] = note
-            continue
-            
-        match = re.match(r'^(注\d*|备注\d*|说明\d*|注意\d*)[：:．.、]?\s*', note)
-        if match:
-            key = re.match(r'^(注\d*|备注\d*|说明\d*|注意\d*)', note).group(1)
-            notes_dict[key] = note
-            continue
-            
-        if note[0] in "*※●◆△▲":
-            notes_dict[note[0]] = note
-            continue
-            
-        notes_dict[note[:10]] = note
+        # 尝试拆分包含多个注释的文本块
+        # 匹配 [注1]、[注2]、[注3、4、5] 等格式作为分隔点
+        split_pattern = r'(?=\[注[\d、,，]+\]|\[备注\d*\]|\[说明\d*\])'
+        parts = re.split(split_pattern, note)
+        parts = [p.strip() for p in parts if p.strip()]
+        
+        if len(parts) > 1:
+            # 文本块包含多个注释，逐个解析
+            for part in parts:
+                _parse_single_note(part, notes_dict)
+        else:
+            # 单个注释
+            _parse_single_note(note, notes_dict)
     
     return notes_dict
 
 
+def _parse_single_note(note, notes_dict):
+    """解析单个注释，提取key并存入字典
+    
+    支持格式：
+    - [注1]内容 -> key="注1"
+    - [注3、4、5]内容 -> keys=["注3", "注4", "注5"]
+    - 注1：内容 -> key="注1"
+    - *内容 -> key="*"
+    """
+    note = note.strip()
+    if not note:
+        return
+    
+    # 匹配 [注3、4、5] 格式（多个编号合并）
+    multi_num_match = re.match(r'^\[(注)([\d、,，]+)\]', note)
+    if multi_num_match:
+        prefix = multi_num_match.group(1)  # "注"
+        nums_str = multi_num_match.group(2)  # "3、4、5"
+        nums = re.split(r'[、,，]', nums_str)
+        for num in nums:
+            num = num.strip()
+            if num:
+                key = f"{prefix}{num}"
+                notes_dict[key] = note
+        return
+    
+    # 匹配 [注1] 格式
+    bracket_match = re.match(r'^\[([注备说][注明意]?\d*)\]', note)
+    if bracket_match:
+        key = bracket_match.group(1)
+        notes_dict[key] = note
+        return
+    
+    # 匹配 （注1） 或 (注1) 格式
+    paren_match = re.match(r'^[（\(]([注备说][注明意]?\d*)[）\)]', note)
+    if paren_match:
+        key = paren_match.group(1)
+        notes_dict[key] = note
+        return
+        
+    # 匹配 注1：内容 格式
+    plain_match = re.match(r'^(注\d*|备注\d*|说明\d*|注意\d*)[：:．.、]?\s*', note)
+    if plain_match:
+        key = re.match(r'^(注\d*|备注\d*|说明\d*|注意\d*)', note).group(1)
+        notes_dict[key] = note
+        return
+        
+    # 匹配特殊符号开头
+    if note[0] in "*※●◆△▲":
+        notes_dict[note[0]] = note
+        return
+        
+    # 无法识别的注释，用前10个字符作为key
+    notes_dict[note[:10]] = note
+
+
 def extract_note_references(text):
-    """从文本中提取注释引用"""
+    """从文本中提取注释引用
+    
+    支持格式：
+    - [注1] 单个注释
+    - [注1][注2] 连续多个注释
+    - [注1、2、3] 或 [注1,2,3] 合并格式
+    - 注1 无方括号格式
+    """
     refs = set()
     
+    # 1. 匹配合并格式: [注1、2、3] 或 [注1,2,3]
+    multi_refs = re.findall(r'\[(注)([\d、,，]+)\]', text)
+    for prefix, nums_str in multi_refs:
+        nums = re.split(r'[、,，]', nums_str)
+        for num in nums:
+            num = num.strip()
+            if num:
+                refs.add(f"{prefix}{num}")
+    
+    # 2. 匹配单个方括号注释: [注1], [备注], [说明2] 等
     bracket_refs = re.findall(r'\[(注\d*|备注\d*|说明\d*|注意\d*)\]', text)
     refs.update(bracket_refs)
     
+    # 3. 匹配无方括号的注释引用: 数值注1
     superscript_refs = re.findall(r'[^\[](注\d+)(?:[：:）\)]|$|\s)', text)
     refs.update(superscript_refs)
     
-    if '*' in text or '※' in text:
-        if '*' in text:
-            refs.add('*')
-        if '※' in text:
-            refs.add('※')
+    # 4. 特殊符号
+    if '*' in text:
+        refs.add('*')
+    if '※' in text:
+        refs.add('※')
     
     return refs
 
@@ -336,7 +410,7 @@ def convert_excel_to_html(
         out_path = Path(output_path)
     else:
         out_path = source_path.with_suffix("").with_name(
-            source_path.stem + "_converted.html"
+            source_path.stem + "_middle.html"
         )
 
     filename = source_path.name
