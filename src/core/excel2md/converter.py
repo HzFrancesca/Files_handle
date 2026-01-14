@@ -8,8 +8,11 @@ Excel 转 Markdown 转换器
 3. 处理合并单元格（重复值）
 4. 转义 Markdown 特殊字符
 5. 包含 RAG 上下文元数据
+6. 注释提取和分发（与 HTML 一致）
 """
 
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,7 +34,7 @@ class MarkdownConverter(BaseExcelConverter):
 
     def _log_features(self) -> None:
         """记录启用的功能"""
-        features = "表头降维 ✓ | 合并单元格 ✓ | 特殊字符转义 ✓"
+        features = "表头降维 ✓ | 合并单元格 ✓ | 特殊字符转义 ✓ | 注释提取 ✓"
         if self.include_metadata:
             features += " | RAG 元数据 ✓"
         if self.keywords:
@@ -49,11 +52,27 @@ class MarkdownConverter(BaseExcelConverter):
         """生成 Markdown 表格"""
         lines: list[str] = []
 
-        # 元数据块（HTML 注释格式）
+        # 提取注释
+        footer_notes, _ = self._detect_footer_notes(sheet, header_rows)
+        notes_dict = self._parse_notes_with_keys(footer_notes)
+        header_text = " ".join(flattened_headers.values())
+        header_note_refs = self._extract_note_references(header_text)
+
+        # 元数据块（YAML front matter 格式）
         if self.include_metadata:
-            lines.append(f"<!-- RAG Context: {filename} | Sheet: {sheet.title} -->")
+            lines.append("---")
+            lines.append(f"source: {filename}")
+            lines.append(f"sheet: {sheet.title}")
             if self.keywords:
-                lines.append(f"<!-- Keywords: {', '.join(self.keywords)} -->")
+                lines.append(f"keywords: {', '.join(self.keywords)}")
+            # 添加注释元数据
+            if notes_dict:
+                header_notes = {k: v for k, v in notes_dict.items() if k in header_note_refs}
+                other_notes = {k: v for k, v in notes_dict.items() if k not in header_note_refs}
+                notes_meta = {"header_notes": header_notes, "conditional_notes": other_notes}
+                notes_json = json.dumps(notes_meta, ensure_ascii=False)
+                lines.append(f"notes_meta: {notes_json}")
+            lines.append("---")
             lines.append("")
 
         # 表头行
@@ -71,6 +90,77 @@ class MarkdownConverter(BaseExcelConverter):
             lines.append("| " + " | ".join(escaped_values) + " |")
 
         return "\n".join(lines)
+
+    def _parse_notes_with_keys(self, notes_list: list[str]) -> dict[str, str]:
+        """解析注释列表，提取注释编号和内容"""
+        notes_dict: dict[str, str] = {}
+        for note in notes_list:
+            note = note.strip()
+            if not note:
+                continue
+            split_pattern = r"(?=\[注[\d、,，]+\]|\[备注\d*\]|\[说明\d*\])"
+            parts = re.split(split_pattern, note)
+            parts = [p.strip() for p in parts if p.strip()]
+            if len(parts) > 1:
+                for part in parts:
+                    self._parse_single_note(part, notes_dict)
+            else:
+                self._parse_single_note(note, notes_dict)
+        return notes_dict
+
+    def _parse_single_note(self, note: str, notes_dict: dict[str, str]) -> None:
+        """解析单个注释"""
+        note = note.strip()
+        if not note:
+            return
+        multi_num_match = re.match(r"^\[(注)([\d、,，]+)\]", note)
+        if multi_num_match:
+            prefix = multi_num_match.group(1)
+            nums_str = multi_num_match.group(2)
+            nums = re.split(r"[、,，]", nums_str)
+            for num in nums:
+                num = num.strip()
+                if num:
+                    notes_dict[f"{prefix}{num}"] = note
+            return
+        bracket_match = re.match(r"^\[([注备说][注明意]?\d*)\]", note)
+        if bracket_match:
+            notes_dict[bracket_match.group(1)] = note
+            return
+        paren_match = re.match(r"^[（\(]([注备说][注明意]?\d*)[）\)]", note)
+        if paren_match:
+            notes_dict[paren_match.group(1)] = note
+            return
+        plain_match = re.match(r"^(注\d*|备注\d*|说明\d*|注意\d*)[：:．.、]?\s*", note)
+        if plain_match:
+            key_match = re.match(r"^(注\d*|备注\d*|说明\d*|注意\d*)", note)
+            if key_match:
+                notes_dict[key_match.group(1)] = note
+            return
+        if note[0] in "*※●◆△▲":
+            notes_dict[note[0]] = note
+            return
+        notes_dict[note[:10]] = note
+
+    def _extract_note_references(self, text: str) -> set[str]:
+        """从文本中提取注释引用"""
+        refs: set[str] = set()
+        multi_refs = re.findall(r"\[(注)([\d、,，]+)\]", text)
+        for prefix, nums_str in multi_refs:
+            nums = re.split(r"[、,，]", nums_str)
+            for num in nums:
+                num = num.strip()
+                if num:
+                    refs.add(f"{prefix}{num}")
+        bracket_refs = re.findall(r"\[(注\d*|备注\d*|说明\d*|注意\d*)\]", text)
+        refs.update(bracket_refs)
+        superscript_refs = re.findall(r"[^\[](注\d+)(?:[：:）\)]|$|\s)", text)
+        refs.update(superscript_refs)
+        if "*" in text:
+            refs.add("*")
+        if "※" in text:
+            refs.add("※")
+        return refs
 
     def _join_sheets(self, sheet_contents: list[str]) -> str:
         """合并多个 sheet 的内容"""

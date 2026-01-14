@@ -50,8 +50,8 @@ def _create_input_column() -> tuple:
 
     # 输出格式选择
     output_format = gr.Radio(
-        choices=["html", "md"],
-        value="html",
+        choices=["md", "html"],
+        value="md",
         label="输出格式",
         elem_classes=["radio-group"],
     )
@@ -222,7 +222,7 @@ def _create_usage_guide() -> None:
 
     with gr.Accordion("使用说明", open=False, elem_classes=["accordion"]):
         gr.Markdown("""
-**输出格式**：HTML（保留表格结构）/ Markdown（纯文本）
+**输出格式**：HTML / Markdown
 
 **增强功能**：上下文注入、幽灵标题、表头扁平化、合并单元格处理、注释智能分发
 
@@ -230,9 +230,11 @@ def _create_usage_guide() -> None:
 
 **输出文件**：中间结果（增强后完整文件）、最终结果（切分后 chunks）
 
-**预览**：点击预览按钮在新标签页查看，html预览含美化样式，建议实际下载查看
+**预览**：点击预览按钮在新标签页查看，预览含美化样式，建议实际下载查看
 
-**注意**：HTML 格式的标签会占用大量 Token，相同 Token 限制下实际文本内容会比 Markdown 格式少，且容易Token爆炸超出上下文长度等
+**注意**：1. HTML 格式的标签会占用大量 Token，相同 Token 限制下实际有效内容会比 Markdown 格式少，且容易Token爆炸超出上下文长度;
+2. 当前未实现表头自动清理,只有合并,建议先简单手动处理一次表头
+
 """)
 
 
