@@ -10,9 +10,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from src.core.excel2html.chunker import distribute_assets_and_chunk
-from src.core.excel2html.converter import convert_excel_to_html
-from src.core.models import ProcessingState, SplitMode
+from src.core.models import OutputFormat, ProcessingState, SplitMode
+from src.core.unified_pipeline import UnifiedPipeline
 
 
 @dataclass
@@ -24,6 +23,7 @@ class ExcelProcessHandler:
     def process(
         self,
         excel_file,
+        output_format: str,
         keywords_text: str,
         split_mode: str,
         max_rows: int,
@@ -44,6 +44,7 @@ class ExcelProcessHandler:
             result = self._execute_conversion(
                 excel_file,
                 temp_dir,
+                output_format,
                 keywords,
                 split_mode,
                 max_rows,
@@ -69,6 +70,7 @@ class ExcelProcessHandler:
         self,
         excel_file,
         temp_dir: Path,
+        output_format: str,
         keywords: list[str] | None,
         split_mode: str,
         max_rows: int,
@@ -84,199 +86,135 @@ class ExcelProcessHandler:
         temp_excel = temp_dir / source_path.name
         shutil.copy(excel_file.name, temp_excel)
 
-        # Excel -> HTML
-        html_path = convert_excel_to_html(
-            excel_path=str(temp_excel),
+        # 解析输出格式
+        fmt = OutputFormat(output_format)
+
+        # 使用统一流水线
+        pipeline = UnifiedPipeline(
+            output_format=fmt,
             keywords=keywords,
-            output_path=None,
+            max_rows_per_chunk=max_rows if split_mode == SplitMode.BY_ROWS else None,
+            target_tokens=target_tokens,
+            separator=separator,
         )
 
-        if not html_path:
-            return None, None, "❌ Excel 转换失败，请检查文件格式"
+        result = pipeline.run(temp_excel)
 
-        html_content = Path(html_path).read_text(encoding="utf-8")
+        if not result or not result.success:
+            return None, None, "❌ 转换失败，请检查文件格式"
 
-        # HTML -> Chunks
-        result = self._chunk_html(
-            html_content,
-            split_mode,
-            max_rows,
-            target_tokens,
-            enable_min_tokens,
-            min_tokens,
-            token_strategy,
-        )
+        # 重命名输出文件
+        ext_map = {
+            OutputFormat.HTML: ".html",
+            OutputFormat.MARKDOWN: ".md",
+        }
+        ext = ext_map[fmt]
 
-        if isinstance(result, str):  # 错误消息
-            return None, None, result
+        # HTML/MD 格式有中间结果和最终结果
+        middle_output_name = f"{source_path.stem}_middle{ext}"
+        final_output_name = f"{source_path.stem}{ext}"
+        middle_path = temp_dir / middle_output_name
+        final_path = temp_dir / final_output_name
 
-        chunks, warnings, stats = result
+        if result.output_path and result.output_path.exists():
+            # 避免复制到自身
+            if result.output_path.resolve() != middle_path.resolve():
+                shutil.copy(result.output_path, middle_path)
+            else:
+                middle_path = result.output_path
+        if result.chunk_path and result.chunk_path.exists():
+            # 避免复制到自身
+            if result.chunk_path.resolve() != final_path.resolve():
+                shutil.copy(result.chunk_path, final_path)
+            else:
+                final_path = result.chunk_path
 
-        # 保存结果
-        return self._save_results(
-            source_path,
-            temp_dir,
-            html_path,
-            chunks,
-            warnings,
-            stats,
-            keywords,
-            split_mode,
-            enable_min_tokens,
-            min_tokens,
-            token_strategy,
-            separator,
-        )
-
-    def _chunk_html(
-        self,
-        html_content: str,
-        split_mode: str,
-        max_rows: int,
-        target_tokens: int,
-        enable_min_tokens: bool,
-        min_tokens: int,
-        token_strategy: str,
-    ) -> tuple[list[str], list[dict], dict] | str:
-        """切分 HTML"""
-        if split_mode == SplitMode.BY_TOKENS:
-            min_tokens_value = min_tokens if enable_min_tokens else None
-
-            if min_tokens_value is not None and min_tokens_value >= target_tokens:
-                return (
-                    f"❌ 最小 Token 数 ({min_tokens_value}) 必须小于最大 Token 数 ({target_tokens})"
-                )
-
-            strategy = "prefer_max" if token_strategy == "接近最大值" else "prefer_min"
-
-            result = distribute_assets_and_chunk(
-                html_content,
-                max_rows_per_chunk=None,
-                max_tokens_per_chunk=target_tokens,
-                min_tokens_per_chunk=min_tokens_value,
-                token_strategy=strategy,
-            )
-        else:
-            result = distribute_assets_and_chunk(
-                html_content,
-                max_rows_per_chunk=max_rows,
-                max_tokens_per_chunk=None,
-            )
-
-        return result["chunks"], result["warnings"], result["stats"]
-
-    def _save_results(
-        self,
-        source_path: Path,
-        temp_dir: Path,
-        html_path: str,
-        chunks: list[str],
-        warnings: list[dict],
-        stats: dict,
-        keywords: list[str] | None,
-        split_mode: str,
-        enable_min_tokens: bool,
-        min_tokens: int,
-        token_strategy: str,
-        separator: str,
-    ) -> tuple[str, str, str]:
-        """保存结果文件"""
-        formatted_separator = f"\n\n{separator}\n\n"
-        merged_content = formatted_separator.join(chunks)
-
-        html_output_name = f"{source_path.stem}_middle.html"
-        chunk_output_name = f"{source_path.stem}.html"
-
-        chunk_path = temp_dir / chunk_output_name
-        chunk_path.write_text(merged_content, encoding="utf-8")
-
-        html_final_path = temp_dir / html_output_name
-        if str(html_path) != str(html_final_path):
-            shutil.copy(html_path, html_final_path)
-            html_path = str(html_final_path)
-
-        self.state.html_path = Path(html_path)
-        self.state.chunk_path = chunk_path
+        self.state.html_path = middle_path
+        self.state.chunk_path = final_path
+        self.state.output_format = fmt
 
         status = self._build_status_message(
             source_path,
+            fmt,
             keywords,
             split_mode,
             enable_min_tokens,
             min_tokens,
             token_strategy,
-            chunks,
-            stats,
-            warnings,
+            result.chunk_count,
             separator,
+            result.chunk_stats,
         )
 
-        return html_path, str(chunk_path), status
+        return str(middle_path), str(final_path), status
 
     def _build_status_message(
         self,
         source_path: Path,
+        output_format: OutputFormat,
         keywords: list[str] | None,
         split_mode: str,
         enable_min_tokens: bool,
         min_tokens: int,
         token_strategy: str,
-        chunks: list[str],
-        stats: dict,
-        warnings: list[dict],
+        chunk_count: int,
         separator: str,
+        chunk_stats=None,
     ) -> str:
         """构建状态消息"""
-        warning_text = ""
-        if warnings:
-            warning_text = f"\n⚠️ 警告：{len(warnings)} 个片段超过 token 限制"
-            for w in warnings:
-                warning_text += (
-                    f"\n   - 片段 #{w['chunk_index']}: "
-                    f"{w['actual_tokens']} tokens (超出 {w['overflow']})"
-                )
+        format_names = {
+            OutputFormat.HTML: "HTML",
+            OutputFormat.MARKDOWN: "Markdown",
+        }
 
         min_token_info = ""
         if split_mode == SplitMode.BY_TOKENS and enable_min_tokens:
             min_token_info = f"\n最小 Token：{min_tokens}，策略：{token_strategy}"
 
+        chunking_info = f"\n切分模式：{split_mode}{min_token_info}"
+        chunking_info += f"\n生成 Chunks：{chunk_count} 个"
+        if chunk_stats:
+            chunking_info += f"\nToken 统计：最小={chunk_stats.min_token_count}, 最大={chunk_stats.max_token_count}, 平均={chunk_stats.avg_token_count:.1f}"
+        chunking_info += f"\n分隔符：{separator}"
+
         return f"""✅ 处理完成
 
 源文件：{source_path.name}
-关键词：{", ".join(keywords) if keywords else "无"}
-切分模式：{split_mode}{min_token_info}
-生成 Chunks：{len(chunks)} 个
-Token 统计：最小={stats["min_token_count"]}, 最大={stats["max_token_count"]}, 平均={stats["avg_token_count"]:.1f}
-分隔符：{separator}{warning_text}"""
+输出格式：{format_names[output_format]}
+关键词：{", ".join(keywords) if keywords else "无"}{chunking_info}"""
 
     def _reset_state(self) -> None:
         """重置状态"""
         self.state.html_path = None
         self.state.chunk_path = None
+        self.state.output_format = OutputFormat.HTML
 
     def get_html_preview(self) -> str | None:
-        """获取 HTML 预览内容"""
+        """获取中间结果预览内容"""
         if self.state.html_path and self.state.html_path.exists():
             content = self.state.html_path.read_text(encoding="utf-8")
-            return self._wrap_preview_html("中间结果预览", content)
+            is_markdown = self.state.output_format == OutputFormat.MARKDOWN
+            return self._wrap_preview_html("中间结果预览", content, is_markdown)
         return None
 
     def get_chunk_preview(self) -> str | None:
-        """获取 Chunk 预览内容"""
+        """获取最终结果预览内容"""
         if self.state.chunk_path and self.state.chunk_path.exists():
             content = self.state.chunk_path.read_text(encoding="utf-8")
-            content = content.replace(
-                "!!!_CHUNK_BREAK_!!!",
-                '</div><hr style="border: 2px dashed #2563eb; margin: 40px 0;">'
-                '<div style="background:#f8f9fa; padding: 8px 16px; border-radius: 4px; '
-                'color: #666; font-size: 0.85rem; margin-bottom: 20px;">📦 Chunk 分隔</div>'
-                '<div class="chunk">',
-            )
-            return self._wrap_preview_html("Chunks 预览", f'<div class="chunk">{content}</div>')
+            is_markdown = self.state.output_format == OutputFormat.MARKDOWN
+
+            return self._wrap_preview_html("Chunks 预览", content, is_markdown)
         return None
 
-    def _wrap_preview_html(self, title: str, content: str) -> str:
+    def _wrap_preview_html(self, title: str, content: str, is_markdown: bool = False) -> str:
         """包装预览 HTML"""
+        if is_markdown:
+            # Markdown 内容用 <pre> 包裹保留格式
+            escaped_content = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            body_content = f'<pre class="markdown-preview">{escaped_content}</pre>'
+        else:
+            body_content = content
+
         return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -291,11 +229,13 @@ Token 统计：最小={stats["min_token_count"]}, 最大={stats["max_token_count
         .rag-context {{ background: #e3f2fd; padding: 16px; border-radius: 8px; margin-bottom: 20px; color: #1565c0; }}
         caption {{ font-size: 0.9rem; color: #666; margin-bottom: 12px; }}
         .chunk {{ margin-bottom: 20px; }}
+        pre {{ background: #f5f5f5; padding: 16px; border-radius: 8px; overflow-x: auto; font-family: monospace; }}
+        .markdown-preview {{ white-space: pre-wrap; word-wrap: break-word; line-height: 1.6; font-size: 14px; }}
     </style>
 </head>
 <body>
     <h2>📄 {title}</h2>
-    {content}
+    {body_content}
 </body>
 </html>"""
 
@@ -314,6 +254,7 @@ def _get_handler() -> ExcelProcessHandler:
 
 def process_excel(
     excel_file,
+    output_format: str,
     keywords_text: str,
     split_mode: str,
     max_rows: int,
@@ -323,9 +264,10 @@ def process_excel(
     token_strategy: str,
     separator: str,
 ) -> tuple[str | None, str | None, str]:
-    """处理 Excel 文件（兼容旧接口）"""
+    """处理 Excel 文件"""
     return _get_handler().process(
         excel_file,
+        output_format,
         keywords_text,
         split_mode,
         max_rows,
@@ -338,10 +280,10 @@ def process_excel(
 
 
 def get_html_preview() -> str | None:
-    """获取 HTML 预览（兼容旧接口）"""
+    """获取中间结果预览"""
     return _get_handler().get_html_preview()
 
 
 def get_chunk_preview() -> str | None:
-    """获取 Chunk 预览（兼容旧接口）"""
+    """获取最终结果预览"""
     return _get_handler().get_chunk_preview()

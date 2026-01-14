@@ -177,18 +177,27 @@ def run_pipeline(
 def main() -> None:
     """命令行入口"""
     parser = argparse.ArgumentParser(
-        description="Excel 转 HTML 完整流水线（增强版 + Chunk 切分）",
+        description="Excel 转换流水线（支持 HTML/MD/CSV 格式）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
   python pipeline.py input.xlsx
+  python pipeline.py input.xlsx -f md
+  python pipeline.py input.xlsx -f csv --delimiter ";"
   python pipeline.py input.xlsx -k "财务报表" "年度收入"
   python pipeline.py input.xlsx -t 1024
   python pipeline.py input.xlsx -r 5
   python pipeline.py input.xlsx -t 2048 -s "---SPLIT---"
         """,
     )
-    parser.add_argument("excel_file", help="要转换的 Excel 文件路径")
+    parser.add_argument("excel_file", nargs="+", help="要转换的 Excel 文件路径（支持多个）")
+    parser.add_argument(
+        "-f",
+        "--format",
+        choices=["html", "md", "csv"],
+        default="html",
+        help="输出格式（默认: html）",
+    )
     parser.add_argument("-k", "--keywords", nargs="+", help="关键检索词（用于幽灵标题）")
     parser.add_argument(
         "-r",
@@ -210,16 +219,42 @@ def main() -> None:
         default="!!!_CHUNK_BREAK_!!!",
         help="chunk 之间的分隔符",
     )
+    # CSV 特定参数
+    parser.add_argument(
+        "--delimiter",
+        default=",",
+        help="CSV 分隔符（默认: 逗号）",
+    )
+    parser.add_argument(
+        "--encoding",
+        default="utf-8",
+        help="CSV 编码（默认: utf-8）",
+    )
 
     args = parser.parse_args()
 
-    run_pipeline(
-        excel_path=args.excel_file,
-        keywords=args.keywords,
-        max_rows_per_chunk=args.max_rows,
-        target_tokens=args.target_tokens,
-        separator=args.separator,
-    )
+    # 批量处理多个文件
+    for excel_file in args.excel_file:
+        if args.format == "html":
+            run_pipeline(
+                excel_path=excel_file,
+                keywords=args.keywords,
+                max_rows_per_chunk=args.max_rows,
+                target_tokens=args.target_tokens,
+                separator=args.separator,
+            )
+        else:
+            from ..unified_pipeline import run_unified_pipeline
+            run_unified_pipeline(
+                excel_path=excel_file,
+                output_format=args.format,
+                keywords=args.keywords,
+                max_rows_per_chunk=args.max_rows,
+                target_tokens=args.target_tokens,
+                separator=args.separator,
+                csv_delimiter=args.delimiter,
+                csv_encoding=args.encoding,
+            )
 
 
 if __name__ == "__main__":

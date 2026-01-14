@@ -26,6 +26,13 @@ class TokenStrategy(StrEnum):
     PREFER_MIN = "prefer_min"
 
 
+class OutputFormat(StrEnum):
+    """输出格式枚举"""
+
+    HTML = "html"
+    MARKDOWN = "md"
+
+
 # ============ 内部数据模型 (dataclass) ============
 
 
@@ -102,11 +109,21 @@ class ChunkResult:
 class ConversionResult:
     """转换结果"""
 
-    html_path: Path | None
+    output_path: Path | None
     chunk_path: Path | None
     chunk_count: int
     status_message: str
+    output_format: OutputFormat = OutputFormat.HTML
     success: bool = True
+    chunk_stats: "ChunkStats | None" = None
+
+    # 向后兼容属性
+    @property
+    def html_path(self) -> Path | None:
+        """向后兼容：返回 HTML 路径"""
+        if self.output_format == OutputFormat.HTML:
+            return self.output_path
+        return None
 
 
 @dataclass
@@ -115,6 +132,7 @@ class ProcessingState:
 
     html_path: Path | None = None
     chunk_path: Path | None = None
+    output_format: OutputFormat = OutputFormat.HTML
 
 
 # ============ 外部输入验证模型 (Pydantic) ============

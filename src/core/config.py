@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     temp_dir: Path = Field(default=Path("./temp"))
 
     # Token 相关配置
-    default_max_tokens: int = Field(default=1024, ge=64, le=8192)
+    default_max_tokens: int = Field(default=512, ge=64, le=8192)
     default_min_tokens: int = Field(default=256, ge=64, le=4096)
     default_max_rows: int = Field(default=8, ge=1, le=100)
 
