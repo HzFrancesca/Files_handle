@@ -3,153 +3,178 @@ Excel 转 HTML 完整流水线
 输入 Excel 文件 -> 生成增强 HTML -> 切分为 Chunks
 """
 
-from pathlib import Path
 import argparse
+from dataclasses import dataclass
+from pathlib import Path
 
-from .excel2html_openpyxl_enhanced import convert_excel_to_html
-from .html2chunk import distribute_assets_and_chunk, estimate_tokens
+from loguru import logger
+
+from ..models import ChunkConfig, ConversionResult, SplitMode
+from .chunker import HtmlChunker
+from .converter import ExcelToHtmlConverter
 
 
-def estimate_rows_for_token_limit(html_content: str, target_tokens: int = 1024) -> int:
-    """根据目标 token 数估算每个 chunk 应该包含多少行"""
-    from bs4 import BeautifulSoup
+@dataclass
+class ConversionPipeline:
+    """Excel 转 HTML 转换流水线"""
 
-    soup = BeautifulSoup(html_content, "html.parser")
+    keywords: list[str] | None = None
+    max_rows_per_chunk: int | None = None
+    target_tokens: int = 1024
+    separator: str = "!!!_CHUNK_BREAK_!!!"
 
-    fixed_parts = []
+    def run(self, excel_path: Path) -> ConversionResult | None:
+        """执行完整的转换流水线"""
+        source_path = Path(excel_path) if not isinstance(excel_path, Path) else excel_path
 
-    context_div = soup.find("div", class_="rag-context")
-    if context_div:
-        fixed_parts.append(str(context_div))
+        if not source_path.exists():
+            logger.error(f"找不到文件 '{source_path}'")
+            return None
 
-    table = soup.find("table")
-    if not table:
-        return 8
+        self._log_start(source_path)
 
-    caption = table.find("caption")
-    if caption:
-        fixed_parts.append(str(caption))
+        # 第一步：Excel -> HTML
+        html_path = self._convert_to_html(source_path)
+        if not html_path:
+            return None
 
-    thead = table.find("thead")
-    if thead:
-        fixed_parts.append(str(thead))
+        # 第二步：HTML -> Chunks
+        chunk_result = self._chunk_html(html_path, source_path)
+        if not chunk_result:
+            return None
 
-    fixed_overhead = estimate_tokens("".join(fixed_parts))
+        return chunk_result
 
-    tbody = table.find("tbody")
-    if tbody:
-        data_rows = tbody.find_all("tr")
-    else:
-        all_rows = table.find_all("tr")
-        data_rows = all_rows[1:] if len(all_rows) > 1 else all_rows
+    def _log_start(self, source_path: Path) -> None:
+        """记录开始日志"""
+        logger.info("=" * 50)
+        logger.info(f"🚀 开始处理流水线: {source_path.name}")
+        logger.info("=" * 50)
 
-    if not data_rows:
-        return 8
+    def _convert_to_html(self, source_path: Path) -> Path | None:
+        """执行 Excel 到 HTML 转换"""
+        logger.info("📌 第一步：Excel 转 HTML（增强版）")
 
-    total_row_tokens = sum(estimate_tokens(str(row)) for row in data_rows)
-    avg_tokens_per_row = total_row_tokens / len(data_rows)
+        converter = ExcelToHtmlConverter(keywords=self.keywords)
+        html_path = converter.convert(source_path)
 
-    available_tokens = target_tokens - fixed_overhead
+        if not html_path:
+            logger.error("流水线中断：HTML 转换失败")
+            return None
 
-    if available_tokens <= 0 or avg_tokens_per_row <= 0:
-        return 1
+        return html_path
 
-    suggested_rows = int(available_tokens / avg_tokens_per_row)
+    def _chunk_html(self, html_path: Path, source_path: Path) -> ConversionResult | None:
+        """执行 HTML 切分"""
+        logger.info("📌 第二步：HTML 切分为 Chunks")
 
-    return max(1, min(suggested_rows, 20))
+        html_content = html_path.read_text(encoding="utf-8")
+
+        config = self._build_chunk_config()
+        chunker = HtmlChunker(config=config)
+        result = chunker.chunk(html_content)
+
+        self._log_chunk_result(result)
+
+        # 保存结果
+        chunk_path = source_path.parent / f"{source_path.stem}.html"
+        return self._save_chunks(chunk_path, result, html_path)
+
+    def _build_chunk_config(self) -> ChunkConfig:
+        """构建切分配置"""
+        if self.max_rows_per_chunk is None:
+            logger.info(f"📊 使用 token 模式，目标每 chunk ≤ {self.target_tokens} tokens")
+            return ChunkConfig(
+                split_mode=SplitMode.BY_TOKENS,
+                max_tokens=self.target_tokens,
+                separator=self.separator,
+            )
+        else:
+            logger.info(f"📊 使用行数模式，每 chunk {self.max_rows_per_chunk} 行")
+            return ChunkConfig(
+                split_mode=SplitMode.BY_ROWS,
+                max_rows=self.max_rows_per_chunk,
+                separator=self.separator,
+            )
+
+    def _log_chunk_result(self, result) -> None:
+        """记录切分结果"""
+        stats = result.stats
+        logger.info(f"🔪 切分完成：共生成 {stats.total_chunks} 个片段")
+        logger.info(
+            f"📊 Token 统计: 最小={stats.min_token_count}, "
+            f"最大={stats.max_token_count}, 平均={stats.avg_token_count:.1f}"
+        )
+
+        if result.warnings:
+            logger.warning(f"有 {len(result.warnings)} 个片段超过 token 限制：")
+            for w in result.warnings:
+                logger.warning(
+                    f"   - 片段 #{w.chunk_index}: {w.actual_tokens} tokens (超出 {w.overflow})"
+                )
+                logger.warning(f"     原因: {w.reason}")
+
+    def _save_chunks(self, chunk_path: Path, result, html_path: Path) -> ConversionResult | None:
+        """保存切分结果"""
+        formatted_separator = f"\n\n{self.separator}\n\n"
+        merged_content = formatted_separator.join(result.chunks)
+
+        try:
+            chunk_path.write_text(merged_content, encoding="utf-8")
+            logger.info(f"✅ Chunk 文件已保存: {chunk_path.absolute()}")
+        except OSError as e:
+            logger.error(f"写入 Chunk 文件失败: {e}")
+            return None
+
+        self._log_completion(html_path, chunk_path, result)
+
+        return ConversionResult(
+            html_path=html_path,
+            chunk_path=chunk_path,
+            chunk_count=len(result.chunks),
+            status_message="处理完成",
+            success=True,
+        )
+
+    def _log_completion(self, html_path: Path, chunk_path: Path, result) -> None:
+        """记录完成日志"""
+        logger.info("=" * 50)
+        logger.info("🎉 流水线执行完成！")
+        logger.info(f"   📄 中间结果 (HTML): {html_path}")
+        logger.info(f"   📄 最终结果 (Chunks): {chunk_path}")
+        logger.info(f"   🔢 Chunk 数量: {len(result.chunks)}")
+        logger.info(f"   🔑 分隔符: {self.separator}")
+        logger.info("=" * 50)
 
 
 def run_pipeline(
     excel_path: str,
-    keywords: list = None,
-    max_rows_per_chunk: int = None,
+    keywords: list[str] | None = None,
+    max_rows_per_chunk: int | None = None,
     target_tokens: int = 1024,
     separator: str = "!!!_CHUNK_BREAK_!!!",
-):
-    """执行完整的 Excel -> HTML -> Chunks 流水线"""
-    source_path = Path(excel_path)
-
-    if not source_path.exists():
-        print(f"❌ 错误：找不到文件 '{source_path}'")
-        return None
-
-    print("=" * 50)
-    print(f"🚀 开始处理流水线: {source_path.name}")
-    print("=" * 50)
-
-    # === 第一步：Excel -> HTML ===
-    print("\n📌 第一步：Excel 转 HTML（增强版）")
-    html_path = convert_excel_to_html(
-        excel_path=str(source_path),
+) -> dict | None:
+    """执行完整的 Excel -> HTML -> Chunks 流水线（兼容旧接口）"""
+    pipeline = ConversionPipeline(
         keywords=keywords,
-        output_path=None,
+        max_rows_per_chunk=max_rows_per_chunk,
+        target_tokens=target_tokens,
+        separator=separator,
     )
 
-    if not html_path:
-        print("❌ 流水线中断：HTML 转换失败")
+    result = pipeline.run(Path(excel_path))
+
+    if result is None:
         return None
-
-    # === 第二步：HTML -> Chunks ===
-    print("\n📌 第二步：HTML 切分为 Chunks")
-    html_content = Path(html_path).read_text(encoding="utf-8")
-
-    if max_rows_per_chunk is None:
-        print(f"📊 使用 token 模式，目标每 chunk ≤ {target_tokens} tokens")
-        result = distribute_assets_and_chunk(
-            html_content,
-            max_rows_per_chunk=None,
-            max_tokens_per_chunk=target_tokens
-        )
-    else:
-        print(f"📊 使用行数模式，每 chunk {max_rows_per_chunk} 行")
-        result = distribute_assets_and_chunk(
-            html_content,
-            max_rows_per_chunk=max_rows_per_chunk,
-            max_tokens_per_chunk=None
-        )
-    
-    chunks = result["chunks"]
-    warnings = result["warnings"]
-    stats = result["stats"]
-    
-    print(f"🔪 切分完成：共生成 {stats['total_chunks']} 个片段")
-    print(f"📊 Token 统计: 最小={stats['min_token_count']}, 最大={stats['max_token_count']}, 平均={stats['avg_token_count']:.1f}")
-    
-    # 输出超限警告
-    if warnings:
-        print(f"\n⚠️  警告：有 {len(warnings)} 个片段超过 token 限制：")
-        for w in warnings:
-            print(f"   - 片段 #{w['chunk_index']}: {w['actual_tokens']} tokens (超出 {w['overflow']})")
-            print(f"     原因: {w['reason']}")
-
-    chunk_path = source_path.parent / f"{source_path.stem}.html"
-
-    formatted_separator = f"\n\n{separator}\n\n"
-    merged_content = formatted_separator.join(chunks)
-
-    try:
-        chunk_path.write_text(merged_content, encoding="utf-8")
-        print(f"✅ Chunk 文件已保存: {chunk_path.absolute()}")
-    except IOError as e:
-        print(f"❌ 写入 Chunk 文件失败: {e}")
-        return None
-
-    print("\n" + "=" * 50)
-    print("🎉 流水线执行完成！")
-    print(f"   📄 中间结果 (HTML): {html_path}")
-    print(f"   📄 最终结果 (Chunks): {chunk_path}")
-    print(f"   🔢 Chunk 数量: {len(chunks)}")
-    print(f"   🔑 分隔符: {separator}")
-    print("=" * 50)
 
     return {
-        "html_path": html_path,
-        "chunk_path": str(chunk_path),
-        "chunk_count": len(chunks),
+        "html_path": str(result.html_path),
+        "chunk_path": str(result.chunk_path),
+        "chunk_count": result.chunk_count,
     }
 
 
-def main():
+def main() -> None:
     """命令行入口"""
     parser = argparse.ArgumentParser(
         description="Excel 转 HTML 完整流水线（增强版 + Chunk 切分）",
@@ -164,9 +189,7 @@ def main():
         """,
     )
     parser.add_argument("excel_file", help="要转换的 Excel 文件路径")
-    parser.add_argument(
-        "-k", "--keywords", nargs="+", help="关键检索词（用于幽灵标题）"
-    )
+    parser.add_argument("-k", "--keywords", nargs="+", help="关键检索词（用于幽灵标题）")
     parser.add_argument(
         "-r",
         "--max-rows",
